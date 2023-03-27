@@ -1,0 +1,245 @@
+####  This is a script to prepare the DPGP3 FASTA files as VCF files and then calculate allele frequencies at each site
+###   NOTES: Most of this script is written in Bash, except where indicated when I have included R code
+###  Obtaining data
+# Obtain "consensus sequences" for the 197 DGPG3 haploid genomes from John Pool's website
+wget http://pooldata.genetics.wisc.edu/dpgp3_sequences.tar.bz2
+# Obtain the code provided for filtering the sequences from John Pool's website
+wget http://johnpool.net/masking.zip
+
+## Prepare fasta files for for SNP-Sites
+## This code was run on all chromosome arms separately that were in unique directories per chromosome arm
+#After unpacking the sequence files for each chromosome I ran filtering steps
+# Filter for masked sites in highly related individuals (IBD)
+perl ibd_mask_seq.pl
+# Filter for admixture
+perl admixture_mask_seq.pl
+
+### NOTE: After running the filters above:
+# Take filtered .seq files and add unique header to SNP-Sites and change the
+# file extension to .fasta
+for file in ZI269*seq; do awk 'BEGIN{print ">'$file'"}1' $file > $file.fasta; done;
+### ZI382 X Chr sequence was missing and ZI28 had an extra nucleotide for the X chromosome sequence so these two were removed
+rm ZI28_Chr*.fasta
+rm ZI382_Chr*.fasta
+
+# Sohail et al. removed the following genotypes because they had extremely high or low numbers of variants
+# I removed these genotypes as well
+#ZI200
+#ZI240
+#ZI293
+#ZI313
+#ZI382 # Also removed due to note above
+#ZI56
+
+# Concatenate all .fasta files and zip the resultant file to save space and then
+# pass this file on to SNP-sites
+
+cat Chr2L_Fasta/Z*Chr2L.seq.fasta > Chr2L.fas &
+cat Chr2R_Fasta/Z*Chr2R.seq.fasta > Chr2R.fas &
+cat Chr3L_Fasta/Z*Chr3L.seq.fasta > Chr3L.fas &
+cat Chr3R_Fasta/Z*Chr3R.seq.fasta > Chr3R.fas &
+cat ChrX_Fasta/Z*ChrX.seq.fasta > ChrX.fas &
+
+# Making VCF files from .fas  multi-alignment files
+snp-sites -v -b -o ChrX.vcf ChrX.fas &
+snp-sites -v -b -o Chr2L.vcf Chr2L.fas &
+snp-sites -v -b -o Chr2R.vcf Chr2R.fas &
+snp-sites -v -b -o Chr3L.vcf Chr3L.fas &
+snp-sites -v -b -o Chr3R.vcf Chr3R.fas &
+
+# Remove headers from vcf files
+sed -i '/^##/d' *.vcf
+
+#Remove header from VCF file and store in seperate file
+cat ChrX.vcf | head -1 > vcf.header
+
+# Add correct chromosome information for each VCF file
+#First strip all vcf files of their headers
+sed -i '/^#/d' ChrX.vcf &
+sed -i '/^#/d' Chr2L.vcf &
+sed -i '/^#/d' Chr2R.vcf &
+sed -i '/^#/d' Chr3L.vcf &
+sed -i '/^#/d' Chr3R.vcf &
+
+#Concatenate all of the VCF files into a single files
+
+cat ChrX.vcf | awk 'BEGIN{OFS = "\t"} {$1="chrX" ; print ;}' > ChrX.tmp.vcf &
+cat Chr2L.vcf | awk 'BEGIN{OFS = "\t"} {$1="chr2L" ; print ;}' > Chr2L.tmp.vcf &
+cat Chr2R.vcf | awk 'BEGIN{OFS = "\t"} {$1="chr2R" ; print ;}' > Chr2R.tmp.vcf &
+cat Chr3L.vcf | awk 'BEGIN{OFS = "\t"} {$1="chr3L" ; print ;}' > Chr3L.tmp.vcf &
+cat Chr3R.vcf | awk 'BEGIN{OFS = "\t"} {$1="chr3R" ; print ;}' > Chr3R.tmp.vcf &
+
+cat vcf.header ChrX.tmp.vcf Chr2L.tmp.vcf Chr2R.tmp.vcf Chr3L.tmp.vcf Chr3R.tmp.vcf > DPGP3.all.chr.vcf
+
+cat DPGP3.all.chr.vcf | grep -v 'N' > tmp && mv DPGP3.all.chr.vcf
+
+# Filtering masked sites as missing data
+# This code will make a new vector of index values for the missing character (identified by *) and then runs a for loop through
+# each genotype column and replaces the index value for a "."
+#cat DPGP3.all.chr.vcf | awk ' BEGIN { OFS = FS = "\t"} { x = $5; sub(",","", x); y = index(x, "\*"); for (i=10; i<=NF; i++){ if ($i==y){ $i="\."} }; print $0 }' > DPGP3.all.chr.cleaned.vcf
+
+# LiftOver coordinates to the latest release of the Drosophila genome (note: use GATK LiftoverVCF tool for this)
+export PATH_TO_LIFTOVER_CHAIN=/plas1/amardeep.singh/GenomicsMaleFemaleArchitecture/GenomicData/DmelChainFiles/dm3ToDm6.over.chain
+export PATH_TO_REFERENCE=/plas1/amardeep.singh/Ensembl.Dmel.Genome.Release/fasta/Dmel.fa
+
+# Remove any site that doesn't have genotypic information at the REF site and Remove any site that is not either fixed or bi-allelic
+cat /plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP3.all.chr.vcf | awk '$4 != "N"' | awk 'length($5) < 4' > /plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP3_FixedOrBiallelic.vcf
+
+# Convert vcf into 'typical' format
+cat /plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP3_FixedOrBiallelic.vcf | awk 'BEGIN {FS = OFS = "\t"}
+  {
+    for (column = 10; column <= NF; ++column) {
+        if ($5 == "*"){
+          if ($column == "1"){
+            $column = "N/N";
+            }
+          else if ($column == "0"){
+            $column = "0/0";
+            }
+          }
+        else if ($5 == "*,A" || $5 == "*,T" || $5 == "*,G" || $5 == "*,C") {
+          if ($column == "0"){
+            $column = "0/0";
+            }
+          else if ($column == "1"){
+            $column = "N/N";
+            }
+          else if ($column == "2") {
+            $column = "1/1";
+            }
+          }
+        else if ($5 == "A,*" || $5 == "T,*" || $5 == "G,*" || $5 == "C,*") {
+          if ($column == "0"){
+            $column = "0/0";
+            }
+          else if ($column == "1"){
+            $column = "1/1";
+            }
+          else if ($column == "2") {
+            $column = "N/N";
+            }
+          }
+        else if ($5 == "A" || $5 == "T" || $5 == "G" || $5 == "C") {
+          if ($column == "0"){
+            $column = "0/0";
+            }
+          else if ($column == "1"){
+            $column = "1/1";
+            }
+          else if ($column == "2") {
+            $column = "N/N";
+            }
+          }
+        } print
+      }' > /plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP3_Formatted_FixedOrBiallelic.vcf &
+
+## Update coordinates of VCF file
+# Add unique ID, separate out the separate out the coordinates to liftOver
+cat /plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP3_Formatted_FixedOrBiallelic.vcf | awk 'BEGIN {OFS = FS = "\t"} {$0=$0 "\t" NR-1} 1' > /plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP3_Formatted_FixedOrBiallelic_liftOver.vcf
+
+# File for liftOver
+cat /plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP3_Formatted_FixedOrBiallelic_liftOver.vcf | awk 'BEGIN {OFS = FS = "\t"} {print $1, $2-1, $2, $NF}' > DGRP_coorindates_liftOver.bed
+export PATH_TO_LIFTOVER_CHAIN=/plas1/amardeep.singh/GenomicsMaleFemaleArchitecture/GenomicData/DmelChainFiles/dm3ToDm6.over.chain
+liftOver DGRP_coorindates_liftOver.bed ${PATH_TO_LIFTOVER_CHAIN} DGRP_coorindates_release6.bed unlifted.bed
+
+# Add header line to 'DGRP_coorindates_release6.bed' (I did this manually using vim but could write a line of code for it)
+
+# Join back coordinates with genotypic information and clean up file
+join -1 4 -2 200 -t $'\t' DGRP_coorindates_release6.bed DPGP3_Formatted_FixedOrBiallelic_liftOver.vcf > DPGP_release6.vcf  &
+
+# Clean up file to retain only columns we want and add a header
+cat DPGP_release6.vcf | cut -f2,4,7-203 > tmp && mv tmp DPGP_release6.vcf
+
+# Redirect header and attach to new VCF
+cat DPGP3_Formatted_FixedOrBiallelic_liftOver.vcf | head -1 | cut -f1-199 | cat - DPGP_release6.vcf  > tmp && mv tmp DPGP_release6.vcf
+
+# Intersect with GFF to filter out non-genic SNPs
+# Export file path to GFF
+export PATH_TO_GFF=/plas1/amardeep.singh/Ensembl.Dmel.Genome.Release/gtf/Dmel_genes.gff
+bedtools intersect -header -wo -a DPGP_release6.vcf -b ${PATH_TO_GFF} > DPGP_genes.vcf
+
+#intersect vcf with 0 and 4 fold sites files
+export PATH_TO_4FOLD=/plas1/amardeep.singh/Ensembl.Dmel.Genome.Release/DegeneracyFiles/Dmel_4fold.bed
+export PATH_TO_0FOLD=/plas1/amardeep.singh/Ensembl.Dmel.Genome.Release/DegeneracyFiles/Dmel_0fold.bed
+export PATH_TO_VCF_INPUT=/plas1/amardeep.singh/RNA.Seq.Data/DPGP3.Genomic.Data/dpgp3_sequences/DPGP_release6.vcf
+
+# Correct chromosome labels in N-fold sites files
+cat ${PATH_TO_4FOLD} | awk 'BEGIN {OFS = FS = "\t"} {print "chr" $1, $2, $3, $4}' > tmp1 && mv tmp1 ${PATH_TO_4FOLD}
+cat ${PATH_TO_0FOLD} | awk 'BEGIN {OFS = FS = "\t"} {print "chr" $1, $2, $3, $4}' > tmp2 && mv tmp2 ${PATH_TO_0FOLD}
+
+# Intersect VCF with N-fold sites
+bedtools intersect -header -wo -a ${PATH_TO_VCF_INPUT} -b ${PATH_TO_4FOLD} > DPGP_4Fold.vcf &
+bedtools intersect -header -wo -a ${PATH_TO_VCF_INPUT} -b ${PATH_TO_0FOLD} > DPGP_0Fold.vcf &
+
+# Retain only columns of interest
+cat DPGP_4Fold.vcf | grep -v '^##' | cut -f1-2,4-5,10-199,203 > tmp1 && mv tmp1 DPGP_4Fold.vcf &
+cat DPGP_0Fold.vcf | grep -v '^##' | cut -f1-2,4-5,10-199,203 > tmp2 && mv tmp2 DPGP_0Fold.vcf &
+
+cat example.vcf | grep -v '^##' | cut -f1-2,4-5,10-199,203 > tmp3 && mv tmp3 example.vcf
+
+# Convert vcf into form for Aneil's Code
+
+# Made this small bash script below. Save the script below in a .sh file and run "script.sh <FilePath> <outputName>"
+
+# --- Bash Script
+#!/bin/bash
+
+file="$1"
+outPath="$2"
+
+cat ${file} | awk 'BEGIN {FS = OFS = "\t"}
+  {
+    for (column = 5; column <= NF-1; ++column) {
+        if ($4 == "*"){
+          if ($column == "N/N"){
+            $column = "NA";
+            }
+          else if ($column == "0/0"){
+            $column = "0";
+            }
+          }
+        else if ($4 == "*,A" || $4 == "*,T" || $4 == "*,G" || $4 == "*,C") {
+          if ($column == "0/0"){
+            $column = "0";
+            }
+          else if ($column == "N/N"){
+            $column = "NA";
+            }
+          else if ($column == "1/1") {
+            $column = "1";
+            }
+          }
+        else if ($4 == "A,*" || $4 == "T,*" || $4 == "G,*" || $4 == "C,*") {
+          if ($column == "0/0"){
+            $column = "0";
+            }
+          else if ($column == "1/1"){
+            $column = "1";
+            }
+          else if ($column == "N/N") {
+            $column = "NA";
+            }
+          }
+        else if ($4 == "A" || $4 == "T" || $4 == "G" || $4 == "C") {
+          if ($column == "0/0"){
+            $column = "0";
+            }
+          else if ($column == "1/1"){
+            $column = "1";
+            }
+          else if ($column == "N/N") {
+            $column = "NA";
+            }
+          }
+        } print
+      }' > ${outPath}
+
+###
+
+bash vcfFormatter.sh DPGP_4Fold.vcf ./DPGP_4Fold_Formatted.vcf &
+bash vcfFormatter.sh DPGP_0Fold.vcf ./DPGP_0Fold_Formatted.vcf &
+
+
+# These output files were the final VCFs from whith tajimasD, piN/piS etc were calculated.
+
+##
